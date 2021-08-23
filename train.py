@@ -16,7 +16,7 @@ Logger.setLevel("INFO")
 
 def Train(SamplePath, TrainSize, Model=None):
     """ collect and split Samples. """
-    Samples, Labels, Features = feature_extract.LoadData(utils.GetAbsolutePath(SamplePath))
+    Samples, Labels, Features = feature_extract.LoadData(utils.get(SamplePath))
 
     """ generate feature space. """
     Logger.info("Generating feature space...")

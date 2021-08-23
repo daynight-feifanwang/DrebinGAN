@@ -1,5 +1,4 @@
 import os
-import sys
 import logging
 import joblib
 import numpy as np
@@ -8,8 +7,8 @@ from sklearn.preprocessing import MultiLabelBinarizer
 from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.svm import LinearSVC, SVC
 from sklearn.metrics import accuracy_score, f1_score, classification_report
+from sklearn.feature_selection import RFECV
 
-sys.path.append(os.path.split(os.path.dirname(__file__))[0])
 import utils
 
 logging.basicConfig(level=logging.INFO, format="'%(asctime)s - %(name)s: %(levelname)s: %(message)s'")
@@ -22,16 +21,16 @@ class DrebinSVM(object):
         self.load_path = utils.get_absolute_path(load_path)
         self.save_path = utils.get_absolute_path(save_path)
         self.train_size = train_size
+
         self.raw_data_path = utils.get_absolute_path('./raw_data')
         self.updated_data_path = utils.get_absolute_path('./updated_data')
-        self.raw_samples = 'apg-X.json'
-        self.raw_labels = 'apg-Y.json'
+        self.raw_samples = 'apgx.json'
+        self.raw_labels = 'apgy.json'
         self.clean_threshold = 3
         self.url_allowed = True
 
         self.model = None
-        self.mlb = MultiLabelBinarizer(sparse_output=True)
-        self.feature_list = None
+        self.mlb = None
 
     def train(self):
         ###### collect samples #####
@@ -43,20 +42,10 @@ class DrebinSVM(object):
 
         ##### generate feature space #####
         logger.info("Generating feature space...")
-        """
-        mal_samples = [sample for i, sample in enumerate(samples) if labels[i] == 1]
-        good_samples = [sample for i, sample in enumerate(samples) if labels[i] == 0]
 
-        batch = round(len(mal_samples) * 4)
-        new_good_samples = []
+        self.mlb = MultiLabelBinarizer(sparse_output=True)
 
-        for i in range(len(good_samples) // batch):
-            new_good_samples.append(good_samples[i * batch : (i + 1) * batch])
-        """
-        if self.feature_list:
-            x = self.mlb.transform(samples)
-        else:
-            x = self.mlb.fit_transform(samples)
+        x = self.mlb.fit_transform(samples)
         y = np.array(labels)
         # malware will be marked as 1 otherwise will be marked as -1
 
@@ -73,12 +62,13 @@ class DrebinSVM(object):
         logger.info("Start training classifier with SVM...")
 
         # ready precondition
-        parameters = [{'C': [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, 10, 50, 100],
-                       'kernel': ['linear', 'rbf', 'sigmoid', 'poly'],
+        parameters = [{'C': [0.01, 0.05, 0.1, 0.25, 0.5, 1, 5, 10, 100],
+                       # 'kernel': ['linear', 'rbf', 'sigmoid', 'poly'],
+                       'kernel': ['linear'],
                        'gamma': [100, 10, 1, 0.1, 0.01, 0.001],
                        'degree': [2, 3, 4, 5]}]
         # classifier = GridSearchCV(LinearSVC(loss='hinge'), parameters, cv=5, scoring='f1', n_jobs=-1, verbose=2)
-        self.model = GridSearchCV(SVC(probability=True), parameters, cv=5, scoring='f1', n_jobs=-1, verbose=5)
+        self.model = GridSearchCV(SVC(probability=True), parameters, cv=5, scoring='accuracy', n_jobs=-1, verbose=5)
 
         # train phrase
         self.model.fit(x_train, y_train)
@@ -111,7 +101,7 @@ class DrebinSVM(object):
                              classification_report(y_test, y_pred, labels=[1, -1],
                                                    target_names=['Malware', 'Goodware']))
 
-        with open("../Report_DrebinSVM", "w") as f:
+        with open("./Report_DrebinSVM", "w") as f:
             f.write(report)
 
     def predict(self, x=None):
@@ -119,7 +109,6 @@ class DrebinSVM(object):
             self.load()
 
         model = self.model.best_estimator_
-        self.mlb.fit(self.feature_list)
 
         x = self.load_data(x)
         y = model.predict(x)
@@ -130,7 +119,10 @@ class DrebinSVM(object):
         self.model = joblib.load(os.path.join(self.save_path, 'svm_model.pkl'))
 
         feature_list = utils.import_from_pkl(self.updated_data_path, 'total_feature_list.data')
-        self.feature_list = [[feature] for feature in feature_list]
+        feature_list = [[feature] for feature in feature_list]
+
+        self.mlb = MultiLabelBinarizer(sparse_output=True)
+        self.mlb.fit(feature_list)
 
     def save(self, classifier):
         if not os.path.exists(self.save_path):
@@ -207,45 +199,67 @@ class DrebinSVM(object):
 
         return samples, list(features)
 
+    def test(self):
+        """
+            x_real = utils.import_from_pkl('../updated_data/sample_list.data')
+            y_real = utils.import_from_pkl('../updated_data/label_list.data')
+            os.rename('../updated_data/sample_list.data', '../updated_data/sample_list.data_')
+            os.rename('../updated_data/label_list.data', '../updated_data/label_list.data_')
+
+            y_pred, z_pred = c.predict('./updated_data/sample_list.data_')
+
+            x_updated = [x for i, x in enumerate(x_real) if y_real[i] == 1]
+            y_updated = [1 for i in range(len(x_updated))]
+
+            x_good = []
+            for i, _ in enumerate(x_real):
+                if y_real[i] == -1 and y_pred[i] == -1:
+                    tmp = x_real[i]
+                    tmp.append(z_pred[i][0] - z_pred[i][1])
+                    x_good.append(tmp)
+            x_good.sort(key=lambda x: x[-1])
+            x_good = [x[:-1] for x in x_good]
+            x_updated += x_good[:round(len(x_good) * 0.6)]
+
+            y_updated += [-1 for i in range(round(len(x_good) * 0.6))]
+
+            utils.export_to_pkl('../updated_data/sample_list.data', Content=x_updated)
+            utils.export_to_pkl('../updated_data/label_list.data', Content=y_updated)
+
+            c.train()
+
+            x = c.mlb.transform(x_real)
+            y = y_real
+            c.evaluate(x, y)
+
+            os.remove('../updated_data/sample_list.data')
+            os.remove('../updated_data/label_list.data')
+            os.rename('../updated_data/sample_list.data_', '../updated_data/sample_list.data')
+            os.rename('../updated_data/label_list.data_', '../updated_data/label_list.data')
+            """
+        pass
+
+    def select_feature(self):
+        # load model
+        if self.model is None:
+            self.load()
+
+        # load data
+        samples, labels, _ = self.load_feature()
+
+        x = self.mlb.transform(samples)
+        y = np.array(labels)
+
+        # select features
+        rfecv = RFECV(self.model.best_estimator_, cv=5, scoring='accuracy', verbose=3)
+        rfecv.fit(x, y)
+
+        print(1)
+
 
 if __name__ == '__main__':
     c = DrebinSVM()
     c.train()
-    """
-    x_real = utils.import_from_pkl('../updated_data/sample_list.data')
-    y_real = utils.import_from_pkl('../updated_data/label_list.data')
-    os.rename('../updated_data/sample_list.data', '../updated_data/sample_list.data_')
-    os.rename('../updated_data/label_list.data', '../updated_data/label_list.data_')
+    c.select_feature()
 
-    y_pred, z_pred = c.predict('./updated_data/sample_list.data_')
-
-    x_updated = [x for i, x in enumerate(x_real) if y_real[i] == 1]
-    y_updated = [1 for i in range(len(x_updated))]
-
-    x_good = []
-    for i, _ in enumerate(x_real):
-        if y_real[i] == -1 and y_pred[i] == -1:
-            tmp = x_real[i]
-            tmp.append(z_pred[i][0] - z_pred[i][1])
-            x_good.append(tmp)
-    x_good.sort(key=lambda x: x[-1])
-    x_good = [x[:-1] for x in x_good]
-    x_updated += x_good[:round(len(x_good) * 0.6)]
-
-    y_updated += [-1 for i in range(round(len(x_good) * 0.6))]
-
-    utils.export_to_pkl('../updated_data/sample_list.data', Content=x_updated)
-    utils.export_to_pkl('../updated_data/label_list.data', Content=y_updated)
-
-    c.train()
-
-    x = c.mlb.transform(x_real)
-    y = y_real
-    c.evaluate(x, y)
-
-    os.remove('../updated_data/sample_list.data')
-    os.remove('../updated_data/label_list.data')
-    os.rename('../updated_data/sample_list.data_', '../updated_data/sample_list.data')
-    os.rename('../updated_data/label_list.data_', '../updated_data/label_list.data')
-    """
 
