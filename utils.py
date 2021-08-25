@@ -82,27 +82,36 @@ def get_absolute_path(Path):
     else:
         return AbsolutePath
 
-def FormatTime():
+def preprocess_data():
+    good_sample_path = './middle_data/good_sample'
+    mal_sample_path = './middle_data/mal_sample'
+
+    if not os.path.exists(good_sample_path):
+        os.makedirs(good_sample_path)
+    if not os.path.exists(mal_sample_path):
+        os.makedirs(mal_sample_path)
+
+    sample_list = import_from_json('./raw_data', 'apgx.json')
+    label_list = import_from_json('./raw_data', 'apgy.json')
+    meta_list = import_from_json('./raw_data', 'apgm.json')
+
+    feature_list = import_from_pkl('./middle_data', 'feature_list.data')
+
+    for i, sample in enumerate(sample_list):
+        name = meta_list[i]['sha256'] + '.feature'
+        sample = set(sample.keys())
+        features = []
+        for feature in feature_list:
+            if feature in sample:
+                features.append(1)
+            else:
+                features.append(0)
+        if label_list[i] == 1:
+            export_to_pkl(mal_sample_path, name, features)
+        else:
+            export_to_pkl(good_sample_path, name, features)
+
+def format_time():
     return datetime.datetime.now().strftime("%Y%m%d-%H_%M_%S")
 
 
-def create_batch(x, batch_size):
-    indices = list(range(len(x)))
-    np.random.shuffle(indices)
-    x = x[indices]
-    batch_x = [x[batch_size * i : (i + 1) * batch_size, :] for i in range(len(x) // batch_size)]
-    return batch_x
-
-
-def get_feature_dim(feature_dir):
-    feature_dir = get_absolute_path(feature_dir)
-    feature_list = import_from_pkl(feature_dir)
-    return len(feature_list)
-
-
-def csrMx2npArr(csr_matrix):
-    pass
-
-
-def npArr2csrMx(np_array):
-    pass

@@ -1,13 +1,14 @@
 import os
 import logging
+
 import joblib
 import numpy as np
-from collections import Counter
 from sklearn.preprocessing import MultiLabelBinarizer
-from sklearn.model_selection import train_test_split, GridSearchCV
-from sklearn.svm import LinearSVC, SVC
+from sklearn.model_selection import train_test_split, GridSearchCV, StratifiedKFold
+from sklearn.svm import LinearSVC
 from sklearn.metrics import accuracy_score, f1_score, classification_report
 from sklearn.feature_selection import GenericUnivariateSelect, SelectFromModel, chi2
+from imblearn.under_sampling import RandomUnderSampler, NearMiss, TomekLinks, RepeatedEditedNearestNeighbours, AllKNN, CondensedNearestNeighbour, OneSidedSelection, NeighbourhoodCleaningRule, InstanceHardnessThreshold
 
 import utils
 
@@ -30,7 +31,7 @@ class DrebinSVM(object):
         self.model = None
         self.mlb = MultiLabelBinarizer(sparse_output=True)
 
-    def train(self):
+    def train(self, prune_sample=None, first_try=False):
         ###### collect samples #####
         logger.info("Loading data for DrebinSVM...")
 
@@ -41,8 +42,7 @@ class DrebinSVM(object):
 
         ##### generate feature space #####
         logger.info("Generating feature space...")
-
-        self.mlb.fit(feature_list)
+        _ = self.mlb.fit(feature_list)
         x = self.mlb.transform(samples)
         y = np.array(labels)
         # malware will be marked as 1 otherwise will be marked as -1
@@ -52,7 +52,17 @@ class DrebinSVM(object):
         ##### split samples to train-test set #####
         logger.info("Splitting samples to train-test set...")
 
-        x_train, x_test, y_train, y_test = train_test_split(x, y, train_size=self.train_size, random_state=10)
+        if prune_sample:
+            if prune_sample == RandomUnderSampler:
+                ps = prune_sample(random_state=10)
+            else:
+                ps = prune_sample(random_state=10, n_jobs=-1)
+            x, y = ps.fit_resample(x, y)
+
+        x_train, x_test, y_train, y_test = train_test_split(x, y, train_size=self.train_size, random_state=10, stratify=y)
+        if first_try:
+            utils.export_to_pkl('./middle_data', 'x_test.data', x_test)
+            utils.export_to_pkl('./middle_data', 'y_test.data', y_test)
 
         logger.info("Splitting Done.")
 
@@ -62,11 +72,14 @@ class DrebinSVM(object):
         # ready precondition
         parameters = [{
             'C': [0.01, 0.05, 0.1, 0.25, 0.5, 1, 5, 10, 100],
-            'penalty': ['l1', 'l2'],
-            'loss': ['hinge', 'squared_hinge']
         }]
-        self.model = GridSearchCV(LinearSVC(max_iter=5000), parameters, cv=5, scoring='f1', n_jobs=-1, verbose=2, error_score=0.0)
-        # self.model = GridSearchCV(SVC(probability=True), parameters, cv=5, scoring='accuracy', n_jobs=-1, verbose=5)
+        self.model = GridSearchCV(LinearSVC(max_iter=10000),
+                                  parameters,
+                                  cv=StratifiedKFold(n_splits=5),
+                                  scoring='f1',
+                                  n_jobs=-1,
+                                  verbose=2,
+                                  error_score=0.0)
 
         # train phrase
         self.model.fit(x_train, y_train)
@@ -79,7 +92,7 @@ class DrebinSVM(object):
 
         logger.info("Training Done.")
 
-    def evaluate(self, x_test, y_test, model=None):
+    def evaluate(self, x_test, y_test, model=None, report_name=""):
         if model is None:
             model = self.model.best_estimator_
 
@@ -92,14 +105,16 @@ class DrebinSVM(object):
         f1score = f1_score(y_test, y_pred)
 
         report = "Test Set Report: total {} samples, {} malsamples, {} goodsamples.\n" \
+                 "Model params: {}." \
                  "Accuracy = {}.\n" \
                  "F1_score = {}.\n" \
                  "{}".format(num_good_sample + num_mal_sample, num_mal_sample, num_good_sample,
+                             self.model.best_params_,
                              accuracy, f1score,
                              classification_report(y_test, y_pred, labels=[1, -1],
                                                    target_names=['Malware', 'Goodware']))
 
-        with open("./Report_DrebinSVM", "w") as f:
+        with open("./report_DrebinSVM_" + report_name, "w") as f:
             f.write(report)
 
     def predict(self, x=None):
@@ -110,13 +125,13 @@ class DrebinSVM(object):
 
         x = self.load_data(x)
         y = model.predict(x)
-        z = model.predict_proba(x)
-        return np.array(y), np.array(z)
+
+        return np.array(y)
 
     def load(self):
-        self.model = joblib.load(os.path.join(self.model_path, 'svm_model.pkl'))
+        self.model = joblib.load(os.path.join(self.model_path, 'model_DrebinSVM.pkl'))
 
-        feature_list = utils.import_from_pkl(self.load_path, 'total_feature_list.data')
+        feature_list = utils.import_from_pkl(self.load_path, 'feature_list.data')
         feature_list = [[feature] for feature in feature_list]
 
         self.mlb = MultiLabelBinarizer(sparse_output=True)
@@ -125,7 +140,7 @@ class DrebinSVM(object):
     def save(self, classifier):
         if not os.path.exists(self.model_path):
             os.makedirs(self.model_path)
-        joblib.dump(classifier, os.path.join(self.model_path, 'svm_model.pkl'))
+        joblib.dump(classifier, os.path.join(self.model_path, 'model_DrebinSVM.pkl'))
 
     def load_data(self, x):
         if type(x) is str:
@@ -180,7 +195,7 @@ class DrebinSVM(object):
 
         utils.export_to_pkl(self.save_path, 'sample_list.data', samples)
 
-    def pre_select_feature(self, param, clean_sample=False):
+    def pre_select_feature(self, mode='percentile', param=10, clean_sample=False):
         # load features
         samples, labels, features = self.load_feature()
 
@@ -189,44 +204,39 @@ class DrebinSVM(object):
         y = np.array(labels)
 
         # select features
-        selector = GenericUnivariateSelect(chi2, mode='percentile', param=param)
-        x_new = selector.fit_transform(x, y)
+        selector = GenericUnivariateSelect(chi2, mode=mode, param=param)
+        _ = selector.fit_transform(x, y)
 
         # map features
-        mask = selector.get_support(True)
-        features = list(np.array(features)[mask])
-        utils.export_to_pkl(self.save_path, 'feature_list.data', features)
-
-        if clean_sample is True:
-            self.clean_data(samples, features)
-
-    def select_feature(self):
-        # load model
-        if self.model is None:
-            self.load()
-
-        # load data
-        samples, labels, _ = self.load_feature()
-
-        ### test ###
-        selector = SelectFromModel(self.model.best_estimator_, prefit=True)
-        x_new = selector.transform(samples)
-
-        x = self.mlb.transform(samples)
-        y = np.array(labels)
-
-        # select features
-        # rfecv = RFECV(self.model.best_estimator_, cv=5, scoring='accuracy', n_jobs=-1, verbose=3)
-        # rfecv.fit(x, y)
-
-        # print(rfecv.n_features_to_select)
-        # print(rfecv.ranking_)
-
+        try:
+            mask = selector.get_support(True)
+            new_features = []
+            for index in mask:
+                new_features.append(features[index])
+            utils.export_to_pkl(self.save_path, 'feature_list.data', new_features)
+            if clean_sample is True:
+                self.clean_data(samples, new_features)
+        except Exception as e:
+            logger.info("Feature mapping FAILED with {}, please delete dir middle_data.".format(e))
 
 if __name__ == '__main__':
     c = DrebinSVM()
-    c.pre_select_feature(20)
-    c.train()
-    # c.select_feature()
+    # c.pre_select_feature('k_best', 150000, clean_sample=True)
+    c.train(first_try=True)
+    del c
+    x_test = utils.import_from_pkl('./middle_data', 'x_test.data')
+    y_test = utils.import_from_pkl('./middle_data', 'y_test.data')
+
+    all = {
+        "NearMiss": NearMiss,
+    }
+
+    for key, val in all:
+        c = DrebinSVM()
+        c.train(prune_sample=val)
+        c.evaluate(x_test, y_test, report_name=key)
+        del c
+
+
 
 
