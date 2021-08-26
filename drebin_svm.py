@@ -7,8 +7,8 @@ from sklearn.preprocessing import MultiLabelBinarizer
 from sklearn.model_selection import train_test_split, GridSearchCV, StratifiedKFold
 from sklearn.svm import LinearSVC
 from sklearn.metrics import accuracy_score, f1_score, classification_report
-from sklearn.feature_selection import GenericUnivariateSelect, SelectFromModel, chi2
-from imblearn.under_sampling import RandomUnderSampler, NearMiss, TomekLinks, RepeatedEditedNearestNeighbours, AllKNN, CondensedNearestNeighbour, OneSidedSelection, NeighbourhoodCleaningRule, InstanceHardnessThreshold
+from sklearn.feature_selection import GenericUnivariateSelect, chi2, SelectFromModel
+from imblearn.ensemble import EasyEnsembleClassifier
 
 import utils
 
@@ -31,7 +31,9 @@ class DrebinSVM(object):
         self.model = None
         self.mlb = MultiLabelBinarizer(sparse_output=True)
 
-    def train(self, prune_sample=None, first_try=False):
+        self.max_features = 4096
+
+    def train(self):
         ###### collect samples #####
         logger.info("Loading data for DrebinSVM...")
 
@@ -52,17 +54,8 @@ class DrebinSVM(object):
         ##### split samples to train-test set #####
         logger.info("Splitting samples to train-test set...")
 
-        if prune_sample:
-            if prune_sample == RandomUnderSampler:
-                ps = prune_sample(random_state=10)
-            else:
-                ps = prune_sample(random_state=10, n_jobs=-1)
-            x, y = ps.fit_resample(x, y)
 
         x_train, x_test, y_train, y_test = train_test_split(x, y, train_size=self.train_size, random_state=10, stratify=y)
-        if first_try:
-            utils.export_to_pkl('./middle_data', 'x_test.data', x_test)
-            utils.export_to_pkl('./middle_data', 'y_test.data', y_test)
 
         logger.info("Splitting Done.")
 
@@ -71,15 +64,31 @@ class DrebinSVM(object):
 
         # ready precondition
         parameters = [{
-            'C': [0.01, 0.05, 0.1, 0.25, 0.5, 1, 5, 10, 100],
+            'base_estimator':[
+                LinearSVC(C=0.01, max_iter=50000),
+                LinearSVC(C=0.05, max_iter=50000),
+                LinearSVC(C=0.1, max_iter=50000),
+                LinearSVC(C=0.5, max_iter=50000),
+                LinearSVC(C=1, max_iter=50000)
+            ],
         }]
-        self.model = GridSearchCV(LinearSVC(max_iter=10000),
+        self.model = GridSearchCV(EasyEnsembleClassifier(n_jobs=-1, random_state=10),
                                   parameters,
                                   cv=StratifiedKFold(n_splits=5),
                                   scoring='f1',
                                   n_jobs=-1,
                                   verbose=2,
                                   error_score=0.0)
+        '''
+        parameters = [{'C': [0.01, 0.05, 0.1, 0.25, 0.5, 0.75, 1, 5]}]
+        self.model = GridSearchCV(LinearSVC(max_iter=50000, random_state=10),
+                                  parameters,
+                                  cv=StratifiedKFold(n_splits=5),
+                                  scoring='f1',
+                                  n_jobs=-1,
+                                  verbose=2,
+                                  error_score=0.0)
+        '''
 
         # train phrase
         self.model.fit(x_train, y_train)
@@ -123,7 +132,6 @@ class DrebinSVM(object):
 
         model = self.model.best_estimator_
 
-        x = self.load_data(x)
         y = model.predict(x)
 
         return np.array(y)
@@ -132,7 +140,7 @@ class DrebinSVM(object):
         self.model = joblib.load(os.path.join(self.model_path, 'model_DrebinSVM.pkl'))
 
         feature_list = utils.import_from_pkl(self.load_path, 'feature_list.data')
-        feature_list = [[feature] for feature in feature_list]
+        feature_list = [feature_list]
 
         self.mlb = MultiLabelBinarizer(sparse_output=True)
         self.mlb.fit(feature_list)
@@ -142,17 +150,7 @@ class DrebinSVM(object):
             os.makedirs(self.model_path)
         joblib.dump(classifier, os.path.join(self.model_path, 'model_DrebinSVM.pkl'))
 
-    def load_data(self, x):
-        if type(x) is str:
-            x = utils.get_absolute_path(x)
-            x = utils.import_from_pkl(x)
-        else:
-            x = self.transform(x)
-
-        x = self.mlb.transform(x)
-        return x
-
-    def load_feature(self):
+    def load_feature(self, threshold=1):
         load_abs_path = utils.get_absolute_path(self.load_path)
         if not os.path.exists(load_abs_path):
             os.makedirs(load_abs_path)
@@ -185,17 +183,9 @@ class DrebinSVM(object):
             utils.export_to_pkl(self.save_path, 'feature_list.data', features)
         logger.info("Loading Feature vocabulary Done.")
 
-        return samples, labels, features
+        return samples[:round(len(samples)*threshold)], labels[:round(len(samples)*threshold)], features
 
-    def clean_data(self, samples, features):
-        # clean samples data with selected features.
-        feature_set = set(features)
-        for i_s, sample in enumerate(samples):
-            samples[i_s] = [feature for feature in sample if feature in feature_set]
-
-        utils.export_to_pkl(self.save_path, 'sample_list.data', samples)
-
-    def pre_select_feature(self, mode='percentile', param=10, clean_sample=False):
+    def pre_select_feature(self, mode='percentile', param=10):
         # load features
         samples, labels, features = self.load_feature()
 
@@ -209,33 +199,65 @@ class DrebinSVM(object):
 
         # map features
         try:
+            # update features
             mask = selector.get_support(True)
             new_features = []
             for index in mask:
                 new_features.append(features[index])
             utils.export_to_pkl(self.save_path, 'feature_list.data', new_features)
-            if clean_sample is True:
-                self.clean_data(samples, new_features)
+
+            # update samples
+            feature_set = set(new_features)
+            for i_s, sample in enumerate(samples):
+                samples[i_s] = [feature for feature in sample if feature in feature_set]
+
+            utils.export_to_pkl(self.save_path, 'sample_list.data', samples)
         except Exception as e:
             logger.info("Feature mapping FAILED with {}, please delete dir middle_data.".format(e))
 
+    def post_select_feature(self, save_path='./final_data'):
+        # load model
+        if self.model is None:
+            self.load()
+        # load features
+        samples, labels, features = self.load_feature()
+
+        x = self.mlb.transform(samples)
+        y = np.array(labels)
+
+        # select features
+        def get_avg_coef(estimator):
+            coef = np.zeros([1, estimator.n_features_])
+
+            for estimator_ in estimator.estimators_:
+                coef += estimator_.named_steps.classifier.coef_
+
+            coef /= estimator.n_estimators
+
+            return coef
+
+        selector = SelectFromModel(self.model.best_estimator_,
+                                   prefit=True,
+                                   importance_getter=get_avg_coef,
+                                   max_features=self.max_features).fit(x, y)
+
+        # update features
+        mask = selector.get_support(True)
+        new_features = []
+        for index in mask:
+            new_features.append(features[index])
+        utils.export_to_pkl(save_path, 'total_feature_list.data', features)
+        utils.export_to_pkl(save_path, 'benign_feature_list.data', new_features)
+
+        logger.info("{:d} features after selection remain {:d}.".format(len(features), len(new_features)))
+
+
 if __name__ == '__main__':
     c = DrebinSVM()
-    # c.pre_select_feature('k_best', 150000, clean_sample=True)
-    c.train(first_try=True)
-    del c
-    x_test = utils.import_from_pkl('./middle_data', 'x_test.data')
-    y_test = utils.import_from_pkl('./middle_data', 'y_test.data')
-
-    all = {
-        "NearMiss": NearMiss,
-    }
-
-    for key, val in all:
-        c = DrebinSVM()
-        c.train(prune_sample=val)
-        c.evaluate(x_test, y_test, report_name=key)
-        del c
+    c.pre_select_feature()
+    c.train()
+    c.post_select_feature()
+    utils.process_data()
 
 
 

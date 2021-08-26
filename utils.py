@@ -4,11 +4,12 @@ import pickle
 import os
 import datetime
 import numpy as np
+from sklearn.preprocessing import MultiLabelBinarizer
 
 
 logging.basicConfig(level=logging.INFO, format="'%(asctime)s - %(name)s: %(levelname)s: %(message)s'")
-Logger = logging.getLogger("UTILS.STDOUT")
-Logger.setLevel("INFO")
+logger = logging.getLogger("UTILS.STDOUT")
+logger.setLevel("INFO")
 
 def import_from_json(AbsolutePath, FileName):
     """
@@ -22,11 +23,11 @@ def import_from_json(AbsolutePath, FileName):
         File = open(AbsolutePath, 'rb')
         Content = json.load(File)
     except Exception as e:
-        Logger.error("Json data loading Failed with exception: {}.".format(e))
+        logger.error("Json data loading Failed with exception: {}.".format(e))
         if "File" in dir():
             File.close()
     else:
-        Logger.info("Json data of {} loaded successfully.".format(AbsolutePath))
+        logger.debug("Json data of {} loaded successfully.".format(AbsolutePath))
         File.close()
         return Content
 
@@ -38,11 +39,11 @@ def export_to_json(AbsolutePath, FileName, Content):
         File = open(AbsolutePath, 'wb')
         json.dump(Content, File, indent=4, sort_keys=True)
     except Exception as e:
-        Logger.error("Json data writing Failed with exception: {}.".format(e))
+        logger.error("Json data writing Failed with exception: {}.".format(e))
         if "File" in dir():
             File.close()
     else:
-        Logger.info("Json data of {} wrote successfully.".format(AbsolutePath))
+        logger.info("Json data of {} wrote successfully.".format(AbsolutePath))
         File.close()
 
 def import_from_pkl(AbsolutePath, FileName=None):
@@ -51,67 +52,96 @@ def import_from_pkl(AbsolutePath, FileName=None):
         File = open(AbsolutePath, 'rb')
         Content = pickle.load(File)
     except Exception as e:
-        Logger.error("Pickle data loading Failed with exception: {}.".format(e))
+        logger.error("Pickle data loading Failed with exception: {}.".format(e))
         if "File" in dir():
             File.close()
     else:
-        Logger.info("Pickle data of {} loaded successfully.".format(AbsolutePath))
+        logger.debug("Pickle data of {} loaded successfully.".format(AbsolutePath))
         File.close()
         return Content
 
-def export_to_pkl(AbsolutePath, FileName=None, Content=None):
+def export_to_pkl(absolute_path, file_name=None, content=None):
+    absolute_path = os.path.join(absolute_path, file_name) if file_name is not None else absolute_path
     try:
-        AbsolutePath = os.path.join(AbsolutePath, FileName) if FileName is not None else AbsolutePath
-        if (isinstance(Content, set)):
-            Content = list(Content)
-        File = open(AbsolutePath, 'wb')
-        pickle.dump(Content, File)
+        if (isinstance(content, set)):
+            content = list(content)
+        file = open(absolute_path, 'wb')
+        pickle.dump(content, file)
     except Exception as e:
-        Logger.error("Pickle data writing Failed with exception: {}.".format(e))
-        if "File" in dir():
-            File.close()
+        logger.error("Pickle data writing Failed with exception: {}.".format(e))
+        if "file" in dir():
+            file.close()
     else:
-        Logger.info("Pickle data of {} wrote successfully.".format(AbsolutePath))
-        File.close()
+        logger.debug("Pickle data of {} wrote successfully.".format(absolute_path))
+        file.close()
 
 def get_absolute_path(Path):
     try:
         AbsolutePath = os.path.abspath(os.path.join(os.path.dirname(__file__), Path))
     except Exception as e:
-        Logger.error("Getting absolute path for {} Failed with exception {}.".format(Path, e))
+        logger.error("Getting absolute path for {} Failed with exception {}.".format(Path, e))
     else:
         return AbsolutePath
 
-def preprocess_data():
-    good_sample_path = './middle_data/good_sample'
-    mal_sample_path = './middle_data/mal_sample'
+def process_data(load_path='./middle_data', save_path='./final_data'):
+    good_sample_path = os.path.join(save_path, 'good_sample')
+    mal_sample_path = os.path.join(save_path, 'mal_sample')
 
     if not os.path.exists(good_sample_path):
         os.makedirs(good_sample_path)
     if not os.path.exists(mal_sample_path):
         os.makedirs(mal_sample_path)
 
-    sample_list = import_from_json('./raw_data', 'apgx.json')
-    label_list = import_from_json('./raw_data', 'apgy.json')
-    meta_list = import_from_json('./raw_data', 'apgm.json')
+    meta_list = import_from_json('./raw_data', 'apg-meta.json')
+    sample_list = import_from_pkl(load_path, 'sample_list.data')
+    label_list = import_from_pkl(load_path, 'label_list.data')
 
-    feature_list = import_from_pkl('./middle_data', 'feature_list.data')
+    benign_feature_list = import_from_pkl(save_path, 'benign_feature_list.data')
+    total_feature_list = import_from_pkl(save_path, 'total_feature_list.data')
+
+    tot_mlb = MultiLabelBinarizer()
+    ben_mlb = MultiLabelBinarizer()
+
+    _ = tot_mlb.fit(total_feature_list)
+    _ = ben_mlb.fit(benign_feature_list)
+
 
     for i, sample in enumerate(sample_list):
         name = meta_list[i]['sha256'] + '.feature'
-        sample = set(sample.keys())
-        features = []
-        for feature in feature_list:
-            if feature in sample:
-                features.append(1)
-            else:
-                features.append(0)
-        if label_list[i] == 1:
-            export_to_pkl(mal_sample_path, name, features)
+        if label_list[i] == 1: # mal sample -> total feature
+            sample = tot_mlb.transform(sample)
+            export_to_pkl(mal_sample_path, name, sample)
         else:
-            export_to_pkl(good_sample_path, name, features)
+            sample = ben_mlb.transform(sample)
+            export_to_pkl(good_sample_path, name, sample)
 
 def format_time():
     return datetime.datetime.now().strftime("%Y%m%d-%H_%M_%S")
 
+def consume_time(timestamp):
+    timestamp = int(timestamp)
+    if (timestamp // 3600 != 0):
+        return "{:.2f}h".format(timestamp / 3600)
+    elif timestamp // 60 != 0:
+        return "{:.2f}min".format(timestamp / 60)
+    return "{:.2f}s".format(timestamp)
 
+def plot(title, vis, x, y, win=None):
+    if win is None:
+        win = vis.line(
+            X=np.asarray([x]),
+            Y=np.asarray([y]),
+            opts=dict(title=title, xlabel='Batch', ylabel='Loss')
+        )
+    else:
+        vis.line(X=np.asarray([x]), Y=np.asarray([y]),
+                 win=win, update='append')
+    return win
+
+
+def log_sample(title, vis, text, win=None):
+    if win is None:
+        win = vis.text(text, opts=dict(title=title))
+    else:
+        vis.text(text, win=win, append=True)
+    return win
