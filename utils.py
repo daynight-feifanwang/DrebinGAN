@@ -99,7 +99,7 @@ def process_data(load_path='./middle_data', save_path='./final_data'):
     label_list = import_from_pkl(load_path, 'label_list.data')
 
     benign_feature_list = import_from_pkl(save_path, 'benign_feature_list.data')
-    total_feature_list = import_from_pkl(save_path, 'total_feature_list.data')
+    total_feature_list = import_from_pkl(save_path, 'feature_list.data')
 
     benign_feature_list = [benign_feature_list]
     total_feature_list = [total_feature_list]

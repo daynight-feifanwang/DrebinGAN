@@ -27,6 +27,8 @@ class DrebinSVM(object):
         self.raw_data_path = utils.get_absolute_path('./raw_data')
         self.raw_samples = 'apg-X.json'
         self.raw_labels = 'apg-y.json'
+        # self.raw_samples = 'apgx.json'
+        # self.raw_labels = 'apgy.json'
 
         self.model = None
         self.mlb = MultiLabelBinarizer(sparse_output=True)
@@ -68,15 +70,17 @@ class DrebinSVM(object):
                 LinearSVC(C=0.01, max_iter=50000),
                 LinearSVC(C=0.05, max_iter=50000),
                 LinearSVC(C=0.1, max_iter=50000),
+                LinearSVC(C=0.25, max_iter=50000),
                 LinearSVC(C=0.5, max_iter=50000),
+                LinearSVC(C=0.75, max_iter=50000),
                 LinearSVC(C=1, max_iter=50000)
             ],
         }]
-        self.model = GridSearchCV(EasyEnsembleClassifier(sampling_strategy=1./3, n_jobs=4, random_state=10),
+        self.model = GridSearchCV(EasyEnsembleClassifier(sampling_strategy=1./3, n_jobs=6, random_state=10),
                                   parameters,
                                   cv=StratifiedKFold(n_splits=5),
                                   scoring='f1',
-                                  n_jobs=4,
+                                  n_jobs=6,
                                   verbose=2,
                                   error_score=0.0)
         '''
@@ -244,7 +248,8 @@ class DrebinSVM(object):
 
         selector = SelectFromModel(self.model.best_estimator_,
                                    importance_getter=get_avg_coef,
-                                   max_features=self.max_features).fit(x, y)
+                                   max_features=self.max_features
+                                   ).fit(x, y)
 
         # update features
         mask = selector.get_support(True)

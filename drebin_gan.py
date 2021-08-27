@@ -66,7 +66,7 @@ class DrebinGAN(object):
 
         # hyper-parameters
         self.model_name = 'DrebinGAN'
-        self.batch_size = 1024
+        self.batch_size = 256
         self.dim = 128 # need to adjust
         self.n_dim = 128
         self.n_critic = 5
@@ -182,32 +182,31 @@ class DrebinGAN(object):
 
             # print log
             # Logger.info("{} - G_loss: {}\tD_loss: {}".format(epoch, G_epoch_loss, D_epoch_loss / self.n_critic))
-            print('[{}] - D_loss: {}, G_loss: {} ... epoch_time: {}'.format(epoch, D_loss.item(),
+            print('[{}] - D_loss: {}, G_loss: {} ... epoch_time: '.format(epoch, D_loss.item(),
                                                                             G_loss.item(),
-                                                                            D_wasserstein.item(),
-                                                                            utils.consume_time(
+                                                                            D_wasserstein.item()) + utils.consume_time(
                                                                                 time.time() - epoch_start_time)
-                                                                            ))
+                                                                            )
             # plot log
             writer.add_scalar('Discriminator Loss', D_loss.item(), epoch)
             writer.add_scalar('Generator Loss', G_loss.item(), epoch)
             writer.add_scalar('Wasserstein Distance', D_wasserstein.item(), epoch)
 
             # evaluate and save model
-            if epoch % 500 == 499:
+            if epoch % 2 == 1:
                 # generate samples
                 self.evaluate(writer, epoch=epoch)
-            if epoch % 500 == 499:
+            if epoch % 2 == 1:
                 # save model
                 # print('[{}] - Saving model'.format(epoch))
                 self.save(epoch)
 
         writer.close()
 
-    def evaluate(self, writer, load_path='./final_data/mal_sample', num_n=10000, epoch=None):
+    def evaluate(self, writer, load_path='./final_data', num_n=1000, epoch=None):
         # load classifier
         if type(self.classifier) == type:
-            self.classifier = DrebinSVM(load_path='./final_data')
+            self.classifier = DrebinSVM(load_path=load_path)
             self.classifier.load()
 
         if self.map == None:
@@ -222,8 +221,9 @@ class DrebinGAN(object):
         col = self.map[features[1]]
         data = np.ones(col.shape[0])
 
+        mal_path = os.path.join(utils.get_absolute_path(load_path), 'mal_sample')
         benign_samples = csr_matrix((data, (row, col)), shape=(masks.shape[0], self.total_feature_size))
-        mal_samples = [utils.import_from_pkl(x.path) for x in os.scandir(load_path) if x.name.endswith('.feature')]
+        mal_samples = [x.path for x in os.scandir(mal_path) if x.name.endswith('.feature')]
 
         escape_rate = []
         diff_rate = []
@@ -236,14 +236,18 @@ class DrebinGAN(object):
             result = self.classifier.predict(adversarial_sample)
             evaded = np.where(result == -1)
 
-            evaded_sample = adversarial_sample[evaded]
-            mal_sample = mal_sample[evaded]
+            if evaded[0]:
+                evaded_sample = adversarial_sample[evaded]
+                mal_sample = mal_sample[evaded]
 
-            diff = ((evaded_sample - mal_sample) == 1).sum(1)
-            mean_diff = int(diff.mean())
+                diff = ((evaded_sample - mal_sample) == 1).sum(1)
+                mean_diff = int(diff.mean())
 
-            escape_rate.append(len(evaded[0]) / num_n)
-            diff_rate.append(mean_diff)
+                escape_rate.append(len(evaded[0]) / num_n)
+                diff_rate.append(mean_diff)
+            else:
+                escape_rate.append(0)
+                diff_rate.append(self.benign_feature_size)
 
         escape_rate = np.array(escape_rate)
         diff_rate = np.array(diff_rate)
