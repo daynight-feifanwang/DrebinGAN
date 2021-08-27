@@ -6,6 +6,8 @@ import datetime
 import numpy as np
 from sklearn.preprocessing import MultiLabelBinarizer
 
+import warnings
+warnings.filterwarnings("ignore")
 
 logging.basicConfig(level=logging.INFO, format="'%(asctime)s - %(name)s: %(levelname)s: %(message)s'")
 logger = logging.getLogger("UTILS.STDOUT")
@@ -92,12 +94,15 @@ def process_data(load_path='./middle_data', save_path='./final_data'):
     if not os.path.exists(mal_sample_path):
         os.makedirs(mal_sample_path)
 
-    meta_list = import_from_json('./raw_data', 'apg-meta.json')
+    meta_list = import_from_json('./raw_data', 'apgm.json')
     sample_list = import_from_pkl(load_path, 'sample_list.data')
     label_list = import_from_pkl(load_path, 'label_list.data')
 
     benign_feature_list = import_from_pkl(save_path, 'benign_feature_list.data')
     total_feature_list = import_from_pkl(save_path, 'total_feature_list.data')
+
+    benign_feature_list = [benign_feature_list]
+    total_feature_list = [total_feature_list]
 
     tot_mlb = MultiLabelBinarizer()
     ben_mlb = MultiLabelBinarizer()
@@ -109,10 +114,10 @@ def process_data(load_path='./middle_data', save_path='./final_data'):
     for i, sample in enumerate(sample_list):
         name = meta_list[i]['sha256'] + '.feature'
         if label_list[i] == 1: # mal sample -> total feature
-            sample = tot_mlb.transform(sample)
+            sample = tot_mlb.transform([sample])
             export_to_pkl(mal_sample_path, name, sample)
         else:
-            sample = ben_mlb.transform(sample)
+            sample = ben_mlb.transform([sample])
             export_to_pkl(good_sample_path, name, sample)
 
 def format_time():
@@ -145,3 +150,24 @@ def log_sample(title, vis, text, win=None):
     else:
         vis.text(text, win=win, append=True)
     return win
+
+
+def benign2total(load_path):
+    abs_load_path = get_absolute_path(load_path)
+    benign_feature_list = import_from_pkl(os.path.join(abs_load_path), 'benign_feature_list.data')
+    total_feature_list = import_from_pkl(os.path.join(abs_load_path, 'feature_list.data'))
+
+    feature_dict = {}
+    for i, feature in enumerate(total_feature_list):
+        feature_dict[feature] = i
+
+    return_map = []
+    for feature in benign_feature_list:
+        return_map.append(feature_dict[feature])
+
+    return return_map, len(total_feature_list)
+
+def sparse_maximum(a, b):
+    is_bigger = a - b
+    is_bigger.data = np.where(is_bigger.data < 0, 1, 0)
+    return a - a.multiply(is_bigger) + b.multiply(is_bigger)

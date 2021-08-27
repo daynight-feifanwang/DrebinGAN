@@ -25,8 +25,8 @@ class DrebinSVM(object):
         self.train_size = train_size
 
         self.raw_data_path = utils.get_absolute_path('./raw_data')
-        self.raw_samples = 'apgx.json'
-        self.raw_labels = 'apgy.json'
+        self.raw_samples = 'apg-X.json'
+        self.raw_labels = 'apg-y.json'
 
         self.model = None
         self.mlb = MultiLabelBinarizer(sparse_output=True)
@@ -49,7 +49,7 @@ class DrebinSVM(object):
         y = np.array(labels)
         # malware will be marked as 1 otherwise will be marked as -1
 
-        logger.info("Generating Done.")
+        logger.info("Generating Done. samples: {:d}, features: {:d}".format(len(samples), len(features)))
 
         ##### split samples to train-test set #####
         logger.info("Splitting samples to train-test set...")
@@ -72,11 +72,11 @@ class DrebinSVM(object):
                 LinearSVC(C=1, max_iter=50000)
             ],
         }]
-        self.model = GridSearchCV(EasyEnsembleClassifier(n_jobs=-1, random_state=10),
+        self.model = GridSearchCV(EasyEnsembleClassifier(sampling_strategy=1./3, n_jobs=4, random_state=10),
                                   parameters,
                                   cv=StratifiedKFold(n_splits=5),
                                   scoring='f1',
-                                  n_jobs=-1,
+                                  n_jobs=4,
                                   verbose=2,
                                   error_score=0.0)
         '''
@@ -94,7 +94,7 @@ class DrebinSVM(object):
         self.model.fit(x_train, y_train)
 
         # evaluate phrase
-        self.evaluate(x_test, y_test)
+        self.evaluate(x_test, y_test, report_name="DrebinSVM")
 
         # save model
         self.save(self.model)
@@ -104,6 +104,8 @@ class DrebinSVM(object):
     def evaluate(self, x_test, y_test, model=None, report_name=""):
         if model is None:
             model = self.model.best_estimator_
+        if not os.path.exists('./report'):
+            os.makedirs('./report')
 
         y_pred = model.predict(x_test)
 
@@ -114,7 +116,7 @@ class DrebinSVM(object):
         f1score = f1_score(y_test, y_pred)
 
         report = "Test Set Report: total {} samples, {} malsamples, {} goodsamples.\n" \
-                 "Model params: {}." \
+                 "Model params: {}.\n" \
                  "Accuracy = {}.\n" \
                  "F1_score = {}.\n" \
                  "{}".format(num_good_sample + num_mal_sample, num_mal_sample, num_good_sample,
@@ -123,7 +125,7 @@ class DrebinSVM(object):
                              classification_report(y_test, y_pred, labels=[1, -1],
                                                    target_names=['Malware', 'Goodware']))
 
-        with open("./report_DrebinSVM_" + report_name, "w") as f:
+        with open("./report/report_" + report_name, "w") as f:
             f.write(report)
 
     def predict(self, x=None):
@@ -215,7 +217,11 @@ class DrebinSVM(object):
         except Exception as e:
             logger.info("Feature mapping FAILED with {}, please delete dir middle_data.".format(e))
 
+        logger.info("{:d} features after pre-selection remain: {:d}".format(len(features), len(new_features)))
+
     def post_select_feature(self, save_path='./final_data'):
+        if not os.path.exists(save_path):
+            os.makedirs(save_path)
         # load model
         if self.model is None:
             self.load()
@@ -237,7 +243,6 @@ class DrebinSVM(object):
             return coef
 
         selector = SelectFromModel(self.model.best_estimator_,
-                                   prefit=True,
                                    importance_getter=get_avg_coef,
                                    max_features=self.max_features).fit(x, y)
 
@@ -246,7 +251,7 @@ class DrebinSVM(object):
         new_features = []
         for index in mask:
             new_features.append(features[index])
-        utils.export_to_pkl(save_path, 'total_feature_list.data', features)
+        utils.export_to_pkl(save_path, 'feature_list.data', features)
         utils.export_to_pkl(save_path, 'benign_feature_list.data', new_features)
 
         logger.info("{:d} features after selection remain {:d}.".format(len(features), len(new_features)))

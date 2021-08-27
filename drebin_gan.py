@@ -3,13 +3,17 @@ import time
 import numpy as np
 import torch
 import logging
+
+from scipy.sparse import csr_matrix, vstack
 from torch.utils.data import Dataset, DataLoader
 import torch.autograd as autograd
 import torch.optim as optim
 from torch.autograd import Variable
+from sklearn.preprocessing import OneHotEncoder
 import utils
-from visdom import Visdom
+from torch.utils.tensorboard import SummaryWriter
 from model import Generator, Discriminator
+from drebin_svm import DrebinSVM
 
 logging.basicConfig(level=logging.INFO, format="'%(asctime)s - %(name)s: %(levelname)s: %(message)s'")
 logger = logging.getLogger("DrebinGAN.STDOUT")
@@ -18,34 +22,14 @@ logger.setLevel("INFO")
 torch.manual_seed(10)
 use_cuda = torch.cuda.is_available()
 
-one = torch.tensor(1, dtype=torch.float)
-minus_one = one * -1
-
-one = one.cuda() if use_cuda else one
-minus_one = minus_one.cuda() if use_cuda else minus_one
-
-# visdom for plotting
-vis = Visdom()
-win_g, win_d, win_w = None, None, None
-assert vis.check_connection()
 
 class DataProcessor():
     def __init__(self, load_path='./middle_data'):
         self.load_path = load_path
-        self.features = None
-        self.feature_dict = dict()
 
         self.dataset = None
         self.loader = None
         self.iterator = None
-
-    def load_feature(self):
-        self.features = utils.import_from_pkl(self.load_path, 'benign_feature_list.data')
-
-        for i, feature in enumerate(self.features):
-            self.feature_dict[feature] = i
-
-        return len(self.features)
 
     def load_data(self, load_path, file_name, batch_size):
         load_abs_path = utils.get_absolute_path(load_path)
@@ -58,10 +42,9 @@ class DataProcessor():
         try:
             samples = next(self.iterator)
         except (StopIteration, TypeError):
-            self.iter_mal = iter(self.iterator)
+            self.iterator = iter(self.loader)
             samples = next(self.iterator)
         return samples
-
 
 class DrebinDataset(Dataset):
     def __init__(self, load_path):
@@ -69,24 +52,25 @@ class DrebinDataset(Dataset):
 
     def __getitem__(self, index):
         sample = utils.import_from_pkl(self.sample_files[index])
-        return torch.BoolTensor(sample)
+        return sample
 
     def __len__(self):
         return len(self.sample_files)
 
-class WGAN_GP(object):
-    def __init__(self, load_path='./middle_data', save_path ='./final_data', model_path='./save_model'):
+class DrebinGAN(object):
+    def __init__(self, load_path='./final_data', save_path ='./final_data', model_path='./save_model',
+                 classifier_model=DrebinSVM):
         self.load_path = load_path
         self.save_path = save_path
         self.model_path = model_path
 
         # hyper-parameters
         self.model_name = 'DrebinGAN'
-        self.batch_size = 1000
-        self.dim = 64 # need to adjust
-        self.n_dim = 100
+        self.batch_size = 1024
+        self.dim = 128 # need to adjust
+        self.n_dim = 128
         self.n_critic = 5
-        self.max_epoch = 10000
+        self.max_epoch = 100000
         self.lambda_ = 10
         self.lrG = 0.0001
         self.lrD = 0.0001
@@ -94,22 +78,42 @@ class WGAN_GP(object):
         self.beta_2 = 0.999
 
         # data loader
-        self.DP = DataProcessor(load_path)
-        self.feature_size = self.DP.load_feature()
-        logger.info("Feature size: {}".format(self.feature_size))
+        self.DP = None
+        self.benign_feature_size = self.load_feature()
+        logger.info("Feature size: {}".format(self.benign_feature_size))
 
         # gen and dis module
-        self.G = Generator(self.dim, self.n_dim, self.feature_size, 2)
-        self.D = Discriminator(self.dim, self.feature_size, 2)
+        self.G = Generator(self.dim, self.n_dim, self.benign_feature_size, 2)
+        self.D = Discriminator(self.dim, self.benign_feature_size, 2)
         self.G_optim = optim.Adam(self.G.parameters(), lr=self.lrG, betas=(self.beta_1, self.beta_2))
         self.D_optim = optim.Adam(self.D.parameters(), lr=self.lrD, betas=(self.beta_1, self.beta_2))
+
+        # classifier model
+        self.classifier = classifier_model
+        self.map = None
 
         if use_cuda:
             self.G.cuda()
             self.D.cuda()
 
+    def load_feature(self):
+        features = utils.import_from_pkl(self.load_path, 'benign_feature_list.data')
+        return len(features)
+
     def train(self):
+        # init
+        one_hot = OneHotEncoder()
+        one_hot.fit(np.array([[0], [1]]))
+        writer = SummaryWriter('logs')
+
+        one = torch.tensor(1, dtype=torch.float)
+        minus_one = one * -1
+
+        one = one.cuda() if use_cuda else one
+        minus_one = minus_one.cuda() if use_cuda else minus_one
+
         logger.info("Loading data...")
+        self.DP = DataProcessor(self.load_path)
         self.DP.load_data(self.load_path, 'good_sample', self.batch_size)
 
         logger.info("Starting training GAN...")
@@ -125,9 +129,10 @@ class WGAN_GP(object):
             for i_critic in range(self.n_critic):
                 self.D.zero_grad()
 
-                # get good samples
-                # TODO 可能需要成 one-hot ？？？
+                # get good samples and reshape
                 real_data = self.DP.next() # real_data = {ndarray: (batch_size, feat_size)}
+                real_data = one_hot.transform(real_data.reshape(-1, 1)).toarray().reshape(-1, self.benign_feature_size, 2)
+                real_data = torch.Tensor(real_data)
                 real_data = real_data.cuda() if use_cuda else real_data
                 real_data_v = Variable(real_data)
 
@@ -137,19 +142,20 @@ class WGAN_GP(object):
                 D_real.backward(minus_one)
 
                 # train discriminator with fake data generated by generator
-                noise = torch.randn(self.batch_size, self.n_dim)
+                noise = torch.randn(real_data_v.shape[0], self.n_dim)
                 noise = noise.cuda() if use_cuda else noise
                 noise = Variable(noise, volatile=True)
 
-                G_fake = self.G(noise)
-                G_fake = Variable(G_fake.data)
+                fake_data = self.G(noise)
+                fake_data_v = Variable(fake_data.data)
 
+                G_fake = fake_data_v
                 D_fake = self.D(G_fake)
                 D_fake = D_fake.mean()
                 D_fake.backward(one)
 
                 # update with grdient penalty
-                gp = self.compute_gradient_penalty(D_real, D_fake)
+                gp = self.compute_gradient_penalty(real_data_v.data, fake_data_v.data)
                 gp.backward()
 
 
@@ -176,26 +182,72 @@ class WGAN_GP(object):
 
             # print log
             # Logger.info("{} - G_loss: {}\tD_loss: {}".format(epoch, G_epoch_loss, D_epoch_loss / self.n_critic))
-            print('[{}] - D_loss: {}, G_loss: {} ... epoch_time: {}'.format(epoch, D_loss.data[0],
-                                                                            G_loss.data[0],
-                                                                            D_wasserstein.data[0],
+            print('[{}] - D_loss: {}, G_loss: {} ... epoch_time: {}'.format(epoch, D_loss.item(),
+                                                                            G_loss.item(),
+                                                                            D_wasserstein.item(),
                                                                             utils.consume_time(
                                                                                 time.time() - epoch_start_time)
                                                                             ))
             # plot log
-            win_d = utils.plot('Discriminator Loss', vis, x=epoch, y=D_loss.data[0], win=win_d)
-            win_g = utils.plot('Generator Loss', vis, x=epoch, y=G_loss.data[0], win=win_g)
-            win_w = utils.plot('Wasserstein Distance', vis, x=epoch, y=D_wasserstein.data[0], win=win_w)
+            writer.add_scalar('Discriminator Loss', D_loss.item(), epoch)
+            writer.add_scalar('Generator Loss', G_loss.item(), epoch)
+            writer.add_scalar('Wasserstein Distance', D_wasserstein.item(), epoch)
 
-            # save model and generate samples every 100 epochs
-            if epoch % 100 == 99:
+            # evaluate and save model
+            if epoch % 500 == 499:
                 # generate samples
-                samples = self.generate(saving=True)
-                # self.evaluate(samples)
-            if epoch % 100 == 99:
+                self.evaluate(writer, epoch=epoch)
+            if epoch % 500 == 499:
                 # save model
-                print('[{}] - Saving model'.format(epoch))
+                # print('[{}] - Saving model'.format(epoch))
                 self.save(epoch)
+
+        writer.close()
+
+    def evaluate(self, writer, load_path='./final_data/mal_sample', num_n=10000, epoch=None):
+        # load classifier
+        if type(self.classifier) == type:
+            self.classifier = DrebinSVM(load_path='./final_data')
+            self.classifier.load()
+
+        if self.map == None:
+            self.map, self.total_feature_size = utils.benign2total(load_path)
+            self.map = np.array(self.map)
+
+        # generate fake benign samples
+        masks = self.generate(num_n)
+
+        features = np.nonzero(masks)  # benign feature index with mark 1
+        row = features[0]
+        col = self.map[features[1]]
+        data = np.ones(col.shape[0])
+
+        benign_samples = csr_matrix((data, (row, col)), shape=(masks.shape[0], self.total_feature_size))
+        mal_samples = [utils.import_from_pkl(x.path) for x in os.scandir(load_path) if x.name.endswith('.feature')]
+
+        escape_rate = []
+        diff_rate = []
+        for mal_sample in mal_samples:
+            mal_sample = csr_matrix(utils.import_from_pkl(mal_sample))
+            mal_sample = vstack([mal_sample] * num_n)
+
+            adversarial_sample = utils.sparse_maximum(benign_samples, mal_sample)
+
+            result = self.classifier.predict(adversarial_sample)
+            evaded = np.where(result == -1)
+
+            evaded_sample = adversarial_sample[evaded]
+            mal_sample = mal_sample[evaded]
+
+            diff = ((evaded_sample - mal_sample) == 1).sum(1)
+            mean_diff = int(diff.mean())
+
+            escape_rate.append(len(evaded[0]) / num_n)
+            diff_rate.append(mean_diff)
+
+        escape_rate = np.array(escape_rate)
+        diff_rate = np.array(diff_rate)
+        writer.add_scalars('GAN evaluation', {'escape_rate': np.mean(escape_rate), 'diff_rate': np.median(diff_rate)}, epoch)
 
     def save(self, epoch):
         if not os.path.exists(self.model_path):
@@ -205,11 +257,11 @@ class WGAN_GP(object):
         torch.save(self.D.state_dict(), os.path.join(self.model_path, self.model_name + '_D_{:d}.pkl'.format(epoch)))
 
     def load(self, G_file_name, D_file_name):
-        self.G.load_state_dict(torch.load(os.path.join(self.model_path, G_file_name)))
-        self.D.load_state_dict(torch.load(os.path.join(self.model_path, D_file_name)))
+        self.G.load_state_dict(torch.load(os.path.join(self.model_path, G_file_name), map_location=torch.device('cpu')))
+        self.D.load_state_dict(torch.load(os.path.join(self.model_path, D_file_name), map_location=torch.device('cpu')))
 
     def compute_gradient_penalty(self, D_real, D_fake):
-        alpha = torch.rand(self.batch_size, 1, 1).expand(D_real.size())
+        alpha = torch.rand(D_real.shape[0], 1, 1).expand(D_real.size())
         alpha = alpha.cuda() if use_cuda else alpha
 
         interpolates = alpha * D_real + (1 - alpha) * D_fake
@@ -232,21 +284,17 @@ class WGAN_GP(object):
     def generate(self, num=1, saving=False, save_path=None):
         noise = torch.randn(num, self.n_dim)
         noise = noise.cuda() if use_cuda else noise
-        noise = Variable(noise, volatile=True)
-
-        samples = self.G(noise)
-        samples = samples.view(-1, self.feature_size, 2)
-        _, samples = torch.max(samples, 2)
-        samples = samples.cpu().data
+        with torch.no_grad():
+            samples = self.G(noise)
+            samples = samples.view(-1, self.benign_feature_size, 2)
+            _, samples = torch.max(samples, 2)
+            samples = samples.cpu().data.numpy()
 
         if saving and save_path:
             utils.export_to_pkl(save_path, content=samples)
         return samples
 
-    def evaluate(self, samples):
-        pass
-
 
 if __name__ == '__main__':
-    gan = WGAN_GP()
+    gan = DrebinGAN(classifier_model=DrebinSVM)
     gan.train()
