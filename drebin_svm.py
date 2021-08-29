@@ -76,11 +76,11 @@ class DrebinSVM(object):
                 LinearSVC(C=1, max_iter=50000)
             ],
         }]
-        self.model = GridSearchCV(EasyEnsembleClassifier(sampling_strategy=1./3, n_jobs=6, random_state=10),
+        self.model = GridSearchCV(EasyEnsembleClassifier(sampling_strategy=0.25, n_jobs=4, random_state=10),
                                   parameters,
                                   cv=StratifiedKFold(n_splits=5),
                                   scoring='f1',
-                                  n_jobs=6,
+                                  n_jobs=4,
                                   verbose=2,
                                   error_score=0.0)
         '''

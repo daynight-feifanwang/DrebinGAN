@@ -94,7 +94,7 @@ def process_data(load_path='./middle_data', save_path='./final_data'):
     if not os.path.exists(mal_sample_path):
         os.makedirs(mal_sample_path)
 
-    meta_list = import_from_json('./raw_data', 'apgm.json')
+    meta_list = import_from_json('./raw_data', 'apg-meta.json')
     sample_list = import_from_pkl(load_path, 'sample_list.data')
     label_list = import_from_pkl(load_path, 'label_list.data')
 
