@@ -4,6 +4,7 @@ import pickle
 import os
 import datetime
 import numpy as np
+from collections import Counter
 from sklearn.preprocessing import MultiLabelBinarizer
 
 import warnings
@@ -13,59 +14,57 @@ logging.basicConfig(level=logging.INFO, format="'%(asctime)s - %(name)s: %(level
 logger = logging.getLogger("UTILS.STDOUT")
 logger.setLevel("INFO")
 
-def import_from_json(AbsolutePath, FileName):
-    """
-    Import data in the json file from the given path.
 
-    :param AbsolutePath: absolute path of the json file
-    :return Content: Content in the json file
-    """
+def import_from_json(absolute_path, file_name):
     try:
-        AbsolutePath = os.path.join(AbsolutePath, FileName)
-        File = open(AbsolutePath, 'rb')
-        Content = json.load(File)
+        absolute_path = os.path.join(absolute_path, file_name)
+        file = open(absolute_path, 'rb')
+        content = json.load(file)
     except Exception as e:
         logger.error("Json data loading Failed with exception: {}.".format(e))
-        if "File" in dir():
-            File.close()
+        if "file" in dir():
+            file.close()
     else:
-        logger.debug("Json data of {} loaded successfully.".format(AbsolutePath))
-        File.close()
-        return Content
+        logger.debug("Json data of {} loaded successfully.".format(absolute_path))
+        file.close()
+        return content
 
-def export_to_json(AbsolutePath, FileName, Content):
+
+def export_to_json(absolute_path, file_name, content):
     try:
-        AbsolutePath = os.path.join(AbsolutePath, FileName)
-        if (isinstance(Content, set)):
-            Content = list(Content)
-        File = open(AbsolutePath, 'wb')
-        json.dump(Content, File, indent=4, sort_keys=True)
+        absolute_path = os.path.join(absolute_path, file_name)
+        if isinstance(content, set):
+            content = list(content)
+        file = open(absolute_path, 'wb')
+        json.dump(content, file, indent=4, sort_keys=True)
     except Exception as e:
         logger.error("Json data writing Failed with exception: {}.".format(e))
-        if "File" in dir():
-            File.close()
+        if "file" in dir():
+            file.close()
     else:
-        logger.info("Json data of {} wrote successfully.".format(AbsolutePath))
-        File.close()
+        logger.info("Json data of {} wrote successfully.".format(absolute_path))
+        file.close()
 
-def import_from_pkl(AbsolutePath, FileName=None):
+
+def import_from_pkl(absolute_path, file_name=None):
     try:
-        AbsolutePath = os.path.join(AbsolutePath, FileName) if FileName else AbsolutePath
-        File = open(AbsolutePath, 'rb')
-        Content = pickle.load(File)
+        absolute_path = os.path.join(absolute_path, file_name) if file_name else absolute_path
+        file = open(absolute_path, 'rb')
+        content = pickle.load(file)
     except Exception as e:
         logger.error("Pickle data loading Failed with exception: {}.".format(e))
-        if "File" in dir():
-            File.close()
+        if "file" in dir():
+            file.close()
     else:
-        logger.debug("Pickle data of {} loaded successfully.".format(AbsolutePath))
-        File.close()
-        return Content
+        logger.debug("Pickle data of {} loaded successfully.".format(absolute_path))
+        file.close()
+        return content
+
 
 def export_to_pkl(absolute_path, file_name=None, content=None):
     absolute_path = os.path.join(absolute_path, file_name) if file_name is not None else absolute_path
     try:
-        if (isinstance(content, set)):
+        if isinstance(content, set):
             content = list(content)
         file = open(absolute_path, 'wb')
         pickle.dump(content, file)
@@ -77,13 +76,15 @@ def export_to_pkl(absolute_path, file_name=None, content=None):
         logger.debug("Pickle data of {} wrote successfully.".format(absolute_path))
         file.close()
 
-def get_absolute_path(Path):
+
+def get_absolute_path(path):
     try:
-        AbsolutePath = os.path.abspath(os.path.join(os.path.dirname(__file__), Path))
+        absolute_path = os.path.abspath(os.path.join(os.path.dirname(__file__), path))
     except Exception as e:
-        logger.error("Getting absolute path for {} Failed with exception {}.".format(Path, e))
+        logger.error("Getting absolute path for {} Failed with exception {}.".format(path, e))
     else:
-        return AbsolutePath
+        return absolute_path
+
 
 def process_data(load_path='./middle_data', save_path='./final_data'):
     good_sample_path = os.path.join(save_path, 'good_sample')
@@ -110,46 +111,27 @@ def process_data(load_path='./middle_data', save_path='./final_data'):
     _ = tot_mlb.fit(total_feature_list)
     _ = ben_mlb.fit(benign_feature_list)
 
-
     for i, sample in enumerate(sample_list):
         name = meta_list[i]['sha256'] + '.feature'
-        if label_list[i] == 1: # mal sample -> total feature
+        if label_list[i] == 1:  # mal sample -> total feature
             sample = tot_mlb.transform([sample])
             export_to_pkl(mal_sample_path, name, sample)
         else:
             sample = ben_mlb.transform([sample])
             export_to_pkl(good_sample_path, name, sample)
 
+
 def format_time():
     return datetime.datetime.now().strftime("%Y%m%d-%H_%M_%S")
 
+
 def consume_time(timestamp):
     timestamp = int(timestamp)
-    if (timestamp // 3600 != 0):
+    if timestamp // 3600 != 0:
         return "{:.2f}h".format(timestamp / 3600)
     elif timestamp // 60 != 0:
         return "{:.2f}min".format(timestamp / 60)
     return "{:.2f}s".format(timestamp)
-
-def plot(title, vis, x, y, win=None):
-    if win is None:
-        win = vis.line(
-            X=np.asarray([x]),
-            Y=np.asarray([y]),
-            opts=dict(title=title, xlabel='Batch', ylabel='Loss')
-        )
-    else:
-        vis.line(X=np.asarray([x]), Y=np.asarray([y]),
-                 win=win, update='append')
-    return win
-
-
-def log_sample(title, vis, text, win=None):
-    if win is None:
-        win = vis.text(text, opts=dict(title=title))
-    else:
-        vis.text(text, win=win, append=True)
-    return win
 
 
 def benign2total(load_path):
@@ -167,7 +149,18 @@ def benign2total(load_path):
 
     return return_map, len(total_feature_list)
 
+
 def sparse_maximum(a, b):
     is_bigger = a - b
     is_bigger.data = np.where(is_bigger.data < 0, 1, 0)
     return a - a.multiply(is_bigger) + b.multiply(is_bigger)
+
+
+def remove_independent_feature(samples):
+    features = []
+    samples = [feature for sample in samples for feature in sample]
+    counter = Counter(samples)
+    for key, value in counter.items():
+        if value >= 2:
+            features.append(key)
+    return features

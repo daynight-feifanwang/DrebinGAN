@@ -23,7 +23,7 @@ torch.manual_seed(10)
 use_cuda = torch.cuda.is_available()
 
 
-class DataProcessor():
+class DataProcessor:
     def __init__(self, load_path='./middle_data'):
         self.load_path = load_path
 
@@ -46,6 +46,7 @@ class DataProcessor():
             samples = next(self.iterator)
         return samples
 
+
 class DrebinDataset(Dataset):
     def __init__(self, load_path):
         self.sample_files = np.array([x.path for x in os.scandir(load_path) if x.name.endswith('.feature')])
@@ -57,8 +58,9 @@ class DrebinDataset(Dataset):
     def __len__(self):
         return len(self.sample_files)
 
+
 class DrebinGAN(object):
-    def __init__(self, load_path='./final_data', save_path ='./final_data', model_path='./save_model',
+    def __init__(self, load_path='./final_data', save_path='./final_data', model_path='./save_model',
                  classifier_model=DrebinSVM):
         self.load_path = load_path
         self.save_path = save_path
@@ -66,7 +68,7 @@ class DrebinGAN(object):
 
         # hyper-parameters
         self.model_name = 'DrebinGAN'
-        self.batch_size = 256
+        self.batch_size = 128
         self.dim = 128 # need to adjust
         self.n_dim = 128
         self.n_critic = 5
@@ -124,13 +126,13 @@ class DrebinGAN(object):
             epoch_start_time = time.time()
 
             # Update Discriminator
-            for parameter in self.D.parameters(): # reset requires_grad every time
-                parameter.requires_grad = True    # as they are blocked during Generator updating.
+            for parameter in self.D.parameters():  # reset requires_grad every time
+                parameter.requires_grad = True     # as they are blocked during Generator updating.
             for i_critic in range(self.n_critic):
                 self.D.zero_grad()
 
                 # get good samples and reshape
-                real_data = self.DP.next() # real_data = {ndarray: (batch_size, feat_size)}
+                real_data = self.DP.next()  # real_data = {ndarray: (batch_size, feat_size)}
                 real_data = one_hot.transform(real_data.reshape(-1, 1)).toarray().reshape(-1, self.benign_feature_size, 2)
                 real_data = torch.Tensor(real_data)
                 real_data = real_data.cuda() if use_cuda else real_data
@@ -182,39 +184,52 @@ class DrebinGAN(object):
 
             # print log
             # Logger.info("{} - G_loss: {}\tD_loss: {}".format(epoch, G_epoch_loss, D_epoch_loss / self.n_critic))
-            print('[{}] - D_loss: {}, G_loss: {} ... epoch_time: '.format(epoch, D_loss.item(),
-                                                                            G_loss.item(),
-                                                                            D_wasserstein.item()) + utils.consume_time(
-                                                                                time.time() - epoch_start_time)
-                                                                            )
+            print('[{}] - D_loss: {}, G_loss: {}, W_loss: {} ... epoch_time: '.format(epoch,
+                                                                                      D_loss.item(),
+                                                                                      G_loss.item(),
+                                                                                      D_wasserstein.item())
+                  + utils.consume_time(time.time() - epoch_start_time))
             # plot log
             writer.add_scalar('Discriminator Loss', D_loss.item(), epoch)
             writer.add_scalar('Generator Loss', G_loss.item(), epoch)
             writer.add_scalar('Wasserstein Distance', D_wasserstein.item(), epoch)
 
             # evaluate and save model
-            if epoch % 2 == 1:
+            if epoch % 500 == 499:
                 # generate samples
                 self.evaluate(writer, epoch=epoch)
-            if epoch % 2 == 1:
+            if epoch % 500 == 499:
                 # save model
                 # print('[{}] - Saving model'.format(epoch))
                 self.save(epoch)
 
         writer.close()
 
-    def evaluate(self, writer, load_path='./final_data', num_n=1000, epoch=None):
+    def evaluate(self, writer, load_path='./final_data', num_n=100, base_n=1000, epoch=None):
+        # try multiprocess
+        from multiprocessing.dummy import Pool as ThreadPool
+        pool = ThreadPool()
         # load classifier
         if type(self.classifier) == type:
             self.classifier = DrebinSVM(load_path=load_path)
             self.classifier.load()
 
-        if self.map == None:
+        if self.map is None:
             self.map, self.total_feature_size = utils.benign2total(load_path)
             self.map = np.array(self.map)
 
+        fake_path = os.path.join(utils.get_absolute_path(load_path), 'fake_good_sample')
+        if not os.path.exists(fake_path):
+            os.makedirs(fake_path)
+
         # generate fake benign samples
-        masks = self.generate(num_n)
+        print('[{}] - Creating noises'.format(epoch), end='\r')
+        masks = []
+        for i in range(num_n // base_n):
+            masks.append(self.generate(base_n))
+        masks = np.array(masks).reshape(num_n, self.benign_feature_size)
+        np.save(os.path.join(fake_path, 'fake_sample_{}.npy'.format(epoch)), masks)
+        print('[{}] - Creating noises ... Done'.format(epoch), end='\r')
 
         features = np.nonzero(masks)  # benign feature index with mark 1
         row = features[0]
@@ -225,33 +240,83 @@ class DrebinGAN(object):
         benign_samples = csr_matrix((data, (row, col)), shape=(masks.shape[0], self.total_feature_size))
         mal_samples = [x.path for x in os.scandir(mal_path) if x.name.endswith('.feature')]
 
-        escape_rate = []
-        diff_rate = []
-        for mal_sample in mal_samples:
+        for i, mal_sample in enumerate(mal_samples):
+            mal_samples[i] = (i, mal_sample)
+
+        SMR = []
+        AMC = []
+        start_time = time.time()
+        '''
+        for i, mal_sample in enumerate(mal_samples):
+            if i % 300 == 299:
+                print('[{}] - Evaluated {}/{} samples, consuming time:'.format(epoch, i + 1, len(mal_samples))
+                      + utils.consume_time(time.time() - start_time), end='\r')
             mal_sample = csr_matrix(utils.import_from_pkl(mal_sample))
             mal_sample = vstack([mal_sample] * num_n)
 
             adversarial_sample = utils.sparse_maximum(benign_samples, mal_sample)
 
             result = self.classifier.predict(adversarial_sample)
-            evaded = np.where(result == -1)
+            escape = np.where(result == -1)
 
-            if evaded[0]:
-                evaded_sample = adversarial_sample[evaded]
-                mal_sample = mal_sample[evaded]
+            if escape[0].shape[0] != 0:
+                evaded_sample = adversarial_sample[escape]
+                mal_sample = mal_sample[escape]
 
                 diff = ((evaded_sample - mal_sample) == 1).sum(1)
-                mean_diff = int(diff.mean())
+                mean_diff = diff.mean()
 
-                escape_rate.append(len(evaded[0]) / num_n)
-                diff_rate.append(mean_diff)
+                escape_rate.append(escape[0].shape[0] / num_n)
+                diff_cost.append(mean_diff)
             else:
                 escape_rate.append(0)
-                diff_rate.append(self.benign_feature_size)
+                diff_cost.append(-1)
+        '''
 
-        escape_rate = np.array(escape_rate)
-        diff_rate = np.array(diff_rate)
-        writer.add_scalars('GAN evaluation', {'escape_rate': np.mean(escape_rate), 'diff_rate': np.median(diff_rate)}, epoch)
+        def process(mal_sample):
+            i, mal_sample = mal_sample
+            if i % 720 == 719:
+                print('[{}] - Evaluated {}/{} samples, consuming time:'.format(epoch, i + 1, len(mal_samples))
+                      + utils.consume_time(time.time() - start_time))
+            mal_sample = csr_matrix(utils.import_from_pkl(mal_sample))
+            mal_sample = vstack([mal_sample] * num_n)
+            adversarial_sample = utils.sparse_maximum(benign_samples, mal_sample)
+            result = self.classifier.predict(adversarial_sample)
+            escape = np.where(result == -1)
+            if escape[0].shape[0] != 0:
+                evaded_sample = adversarial_sample[escape]
+                mal_sample = mal_sample[escape]
+
+                diff = ((evaded_sample - mal_sample) == 1).sum(1)
+                mean_diff = diff.min()
+
+                return escape[0].shape[0] / num_n, mean_diff
+            else:
+                return 0, -1
+
+        results = pool.map(process, mal_samples)
+        for result in results:
+            SMR.append(result[0])
+            AMC.append(result[1])
+        pool.close()
+        pool.join()
+
+        # save the result
+        utils.export_to_pkl('./report', 'report_escape_rate_{}.pkl'.format(epoch), SMR)
+        utils.export_to_pkl('./report', 'report_diff_cost_{}.pkl'.format(epoch), AMC)
+
+        # plot the result
+        SMR = np.mean(np.array(SMR))
+        SER = np.count_nonzero(SMR)
+        AMC = np.array(AMC)
+        AMC = round(np.mean(AMC[AMC != -1]))
+
+        print('[{}] - SMR: {:.4f}, ESR: {:.4f}, AMC: {:d}  consuming time:'.format(epoch, SMR, SER, AMC)
+              + utils.consume_time(time.time() - start_time))
+        writer.add_scalar('Successfully Modified Ratio', SMR, epoch)
+        writer.add_scalar('Successfully Escaped Ratio', SER, epoch)
+        writer.add_scalar('Average Modification Cost', AMC, epoch)
+        return masks
 
     def save(self, epoch):
         if not os.path.exists(self.model_path):
@@ -261,8 +326,8 @@ class DrebinGAN(object):
         torch.save(self.D.state_dict(), os.path.join(self.model_path, self.model_name + '_D_{:d}.pkl'.format(epoch)))
 
     def load(self, G_file_name, D_file_name):
-        self.G.load_state_dict(torch.load(os.path.join(self.model_path, G_file_name), map_location=torch.device('cpu')))
-        self.D.load_state_dict(torch.load(os.path.join(self.model_path, D_file_name), map_location=torch.device('cpu')))
+        self.G.load_state_dict(torch.load(os.path.join(self.model_path, G_file_name)))
+        self.D.load_state_dict(torch.load(os.path.join(self.model_path, D_file_name)))
 
     def compute_gradient_penalty(self, D_real, D_fake):
         alpha = torch.rand(D_real.shape[0], 1, 1).expand(D_real.size())
@@ -300,5 +365,6 @@ class DrebinGAN(object):
 
 
 if __name__ == '__main__':
+    utils.process_data()
     gan = DrebinGAN(classifier_model=DrebinSVM)
     gan.train()

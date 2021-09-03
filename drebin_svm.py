@@ -27,8 +27,6 @@ class DrebinSVM(object):
         self.raw_data_path = utils.get_absolute_path('./raw_data')
         self.raw_samples = 'apg-X.json'
         self.raw_labels = 'apg-y.json'
-        # self.raw_samples = 'apgx.json'
-        # self.raw_labels = 'apgy.json'
 
         self.model = None
         self.mlb = MultiLabelBinarizer(sparse_output=True)
@@ -56,6 +54,8 @@ class DrebinSVM(object):
         ##### split samples to train-test set #####
         logger.info("Splitting samples to train-test set...")
 
+        from imblearn.over_sampling import SMOTE
+        x, y = SMOTE(sampling_strategy=0.3, n_jobs=-1).fit_resample(x, y)
 
         x_train, x_test, y_train, y_test = train_test_split(x, y, train_size=self.train_size, random_state=10, stratify=y)
 
@@ -65,6 +65,7 @@ class DrebinSVM(object):
         logger.info("Start training classifier with SVM...")
 
         # ready precondition
+        '''
         parameters = [{
             'base_estimator':[
                 LinearSVC(C=0.01, max_iter=50000),
@@ -85,14 +86,13 @@ class DrebinSVM(object):
                                   error_score=0.0)
         '''
         parameters = [{'C': [0.01, 0.05, 0.1, 0.25, 0.5, 0.75, 1, 5]}]
-        self.model = GridSearchCV(LinearSVC(max_iter=50000, random_state=10),
+        self.model = GridSearchCV(LinearSVC(max_iter=50000),
                                   parameters,
                                   cv=StratifiedKFold(n_splits=5),
                                   scoring='f1',
                                   n_jobs=-1,
                                   verbose=2,
                                   error_score=0.0)
-        '''
 
         # train phrase
         self.model.fit(x_train, y_train)
@@ -191,12 +191,13 @@ class DrebinSVM(object):
 
         return samples[:round(len(samples)*threshold)], labels[:round(len(samples)*threshold)], features
 
-    def pre_select_feature(self, mode='percentile', param=10):
+    def pre_select_feature(self, mode='percentile', param=30):
         # load features
         samples, labels, features = self.load_feature()
-
+        # features = utils.remove_independent_feature(samples)
         # transform samples to sparse matrix
-        x = self.mlb.fit_transform(samples)
+        _ = self.mlb.fit(features)
+        x = self.mlb.transform(samples)
         y = np.array(labels)
 
         # select features
@@ -267,7 +268,6 @@ if __name__ == '__main__':
     c.pre_select_feature()
     c.train()
     c.post_select_feature()
-    utils.process_data()
 
 
 

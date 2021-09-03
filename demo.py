@@ -6,15 +6,14 @@ import numpy as np
 import utils
 from scipy.sparse import csr_matrix, vstack
 
-def generate_adversarial_sample(sample_num=100):
-    load_path = './test_data'
+def generate_adversarial_sample(load_path='./test_data', library_scale=100):
     # init module
     # test_data dir contains {mal_samples, benign_features, total_features}
     generator = DrebinGAN(load_path=load_path, save_path=load_path)
     classifier = DrebinSVM(load_path=load_path, save_path=load_path)
 
     # load model
-    generator.load('DrebinGAN_G_14699.pkl', 'DrebinGAN_D_14699.pkl')
+    generator.load('DrebinGAN_G_3499.pkl', 'DrebinGAN_D_3499.pkl')
     classifier.load()
 
     # load feature map
@@ -22,7 +21,7 @@ def generate_adversarial_sample(sample_num=100):
     benign2total_map = np.array(benign2total_map)
 
     # generate fake masks, fake mask type: {n_darray: {num, benign_feat_size}}
-    masks = generator.generate(sample_num)
+    masks = generator.generate(library_scale)
 
     # map masks to total features
     features = np.nonzero(masks) # benign feature index with mark 1
@@ -52,14 +51,13 @@ def generate_adversarial_sample(sample_num=100):
         diff = ((adversarial_sample - mal_sample) == 1).sum(1)
         best_sample = adversarial_sample[diff.argmin()]
 
-        # adversarial_samples.append(best_sample)
-        adversarial_samples.append(diff.min())
+        adversarial_samples.append([best_sample, diff.min()])
 
     return adversarial_samples
 
 
 if __name__ == '__main__':
-    ad = generate_adversarial_sample(100)
+    ad = generate_adversarial_sample(library_scale=1000)
     print(ad)
 
 
