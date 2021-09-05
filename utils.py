@@ -87,6 +87,7 @@ def get_absolute_path(path):
 
 
 def process_data(load_path='./middle_data', save_path='./final_data'):
+    logger.info('Start pre-processing data before training GAN...')
     good_sample_path = os.path.join(save_path, 'good_sample')
     mal_sample_path = os.path.join(save_path, 'mal_sample')
 
@@ -119,6 +120,7 @@ def process_data(load_path='./middle_data', save_path='./final_data'):
         else:
             sample = ben_mlb.transform([sample])
             export_to_pkl(good_sample_path, name, sample)
+    logger.info('Pre-processing data DONE.')
 
 
 def format_time():

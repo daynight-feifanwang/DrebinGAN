@@ -205,7 +205,7 @@ class DrebinGAN(object):
 
         writer.close()
 
-    def evaluate(self, writer, load_path='./final_data', num_n=100, base_n=1000, epoch=None):
+    def evaluate(self, writer, load_path='./final_data', num_n=100, base_n=100, epoch=None):
         # try multiprocess
         from multiprocessing.dummy import Pool as ThreadPool
         pool = ThreadPool()
@@ -309,7 +309,10 @@ class DrebinGAN(object):
         SMR = np.mean(np.array(SMR))
         SER = np.count_nonzero(SMR)
         AMC = np.array(AMC)
-        AMC = round(np.mean(AMC[AMC != -1]))
+        try:
+            AMC = round(np.mean(AMC[AMC != -1]))
+        except Exception:
+            AMC = 4096
 
         print('[{}] - SMR: {:.4f}, ESR: {:.4f}, AMC: {:d}  consuming time:'.format(epoch, SMR, SER, AMC)
               + utils.consume_time(time.time() - start_time))

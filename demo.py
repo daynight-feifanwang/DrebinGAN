@@ -38,20 +38,23 @@ def generate_adversarial_sample(load_path='./test_data', library_scale=100):
 
     for mal_sample in mal_samples:
         mal_sample = csr_matrix(mal_sample)
-        mal_sample = vstack([mal_sample] * sample_num)
+        mal_sample = vstack([mal_sample] * library_scale)
 
         adversarial_sample = utils.sparse_maximum(benign_samples, mal_sample)
 
         result = classifier.predict(adversarial_sample)
 
         result = np.where(result == -1) # filter out the good samples classified
-        adversarial_sample = adversarial_sample[result]
-        mal_sample = mal_sample[result]
+        if result[0].shape[0] != 0:
+            adversarial_sample = adversarial_sample[result]
+            mal_sample = mal_sample[result]
 
-        diff = ((adversarial_sample - mal_sample) == 1).sum(1)
-        best_sample = adversarial_sample[diff.argmin()]
+            diff = ((adversarial_sample - mal_sample) == 1).sum(1)
+            best_sample = adversarial_sample[diff.argmin()]
 
-        adversarial_samples.append([best_sample, diff.min()])
+            adversarial_samples.append([best_sample, diff.min()])
+        else:
+            adversarial_samples.append(None)
 
     return adversarial_samples
 

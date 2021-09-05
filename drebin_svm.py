@@ -196,7 +196,7 @@ class DrebinSVM(object):
         samples, labels, features = self.load_feature()
         # features = utils.remove_independent_feature(samples)
         # transform samples to sparse matrix
-        _ = self.mlb.fit(features)
+        _ = self.mlb.fit([features])
         x = self.mlb.transform(samples)
         y = np.array(labels)
 
@@ -237,6 +237,7 @@ class DrebinSVM(object):
         y = np.array(labels)
 
         # select features
+        '''
         def get_avg_coef(estimator):
             coef = np.zeros([1, estimator.n_features_])
 
@@ -251,7 +252,10 @@ class DrebinSVM(object):
                                    importance_getter=get_avg_coef,
                                    max_features=self.max_features
                                    ).fit(x, y)
-
+        '''
+        selector = SelectFromModel(self.model.best_estimator_,
+                                   max_features=self.max_features
+                                   ).fit(x, y)
         # update features
         mask = selector.get_support(True)
         new_features = []
